@@ -1,0 +1,1220 @@
+import socket
+import time
+import threading
+import json
+import os
+import subprocess
+import re
+import sys
+import traceback
+import socket
+import tkinter as tk
+from tkinter import ttk, scrolledtext, StringVar, DoubleVar, Button, Label, Entry, Frame, messagebox, Checkbutton, IntVar, Canvas
+from tkinter import font as tkfont
+import concurrent.futures
+
+class IPv6DNSOptimizer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("IPv6 DNS优选工具")
+        self.root.geometry("900x900")
+        self.root.resizable(True, True)
+        
+        # 设置字体 - 增加容错性
+        try:
+            # 尝试获取系统默认字体
+            self.default_font = tkfont.nametofont("TkDefaultFont")
+            
+            # 尝试多种中文字体，避免因缺少特定字体导致程序崩溃
+            chinese_fonts = ["微软雅黑", "宋体", "黑体", "SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+            font_set = False
+            
+            # 尝试设置中文字体
+            for font in chinese_fonts:
+                try:
+                    # 测试字体是否可用
+                    test_font = tkfont.Font(family=font, size=10)
+                    self.default_font.configure(family=font, size=10)
+                    font_set = True
+                    break
+                except Exception:
+                    continue
+            
+            if font_set:
+                self.root.option_add("*Font", self.default_font)
+            else:
+                # 如果没有找到中文字体，使用系统默认字体设置
+                self.root.option_add("*Font", self.default_font)
+        except Exception as e:
+            # 记录错误但继续执行
+            pass
+            # 使用系统默认字体
+            pass
+        
+        # 创建主框架
+        self.main_frame = Frame(root)
+        self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # 创建标签页控件
+        self.tab_control = ttk.Notebook(self.main_frame)
+        
+        # 创建测速标签页
+        self.tab_speed_test = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tab_speed_test, text="ipv6 DNS测速")
+        
+        # 创建单独的预定义DNS服务器标签页
+        self.tab_predefined_dns = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tab_predefined_dns, text="预定义DNS")
+        
+        # 创建设置标签页
+        self.tab_settings = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tab_settings, text="设置")
+        
+        # 创建关于标签页
+        self.tab_about = ttk.Frame(self.tab_control)
+        self.tab_control.add(self.tab_about, text="关于")
+        
+        self.tab_control.pack(expand=1, fill="both")
+        
+        # 用于控制测速取消
+        self.cancelled = False
+        
+        # 预定义的IPv6 DNS服务器 - 完整列表
+        self.predefined_dns_servers = {
+            # 国内IPv6 DNS服务器
+            "阿里云IPv6": "2400:3200::1",
+            "腾讯云IPv6": "2402:4e00::",
+            "百度IPv6": "2400:da00::6666",
+            "CNNIC IPv6": "2001:dc7:1000::1",
+            "中国移动IPv6": "2409:8000::",
+            "中国电信IPv6": "240e:950::",
+            "中国联通IPv6": "2408:871a::",
+            "教育网IPv6": "2001:da8:2002::",
+            
+            # 国外IPv6 DNS服务器
+            "Google Public DNS IPv6": "2001:4860:4860::8888",
+            "Cloudflare IPv6": "2606:4700:4700::1111",
+            "Quad9 IPv6 (安全)": "2620:fe::fe",
+            "OpenDNS IPv6": "2620:119:35::35",
+            "Norton ConnectSafe IPv6": "2620:109:c0::2:4001",
+            "DNS.WATCH IPv6": "2001:1608:10:25::1c04:b12f",
+            "Level3 IPv6": "2001:470:20::2",
+            "Verisign IPv6": "2620:74:1b::1:1",
+        }
+        
+        # 自定义DNS服务器列表
+        self.custom_dns_servers = []
+        
+        # 初始化测速标签页
+        self.init_speed_test_tab()
+        
+        # 初始化预定义DNS服务器标签页
+        self.init_predefined_dns_tab(self.tab_predefined_dns)
+        
+        # 初始化设置标签页
+        self.init_settings_tab()
+        
+        # 初始化关于标签页
+        self.init_about_tab()
+        
+        # 加载保存的设置
+        self.load_settings()
+        
+        # 检查IPv6连接
+        if not self.check_ipv6_connectivity():
+            messagebox.showwarning("警告", "未检测到IPv6网络连接。程序仍可运行，但测速结果可能不准确。")
+    
+    def init_speed_test_tab(self):
+        # 创建主框架，包含上方测速区域和下方信息区域
+        main_frame = Frame(self.tab_speed_test)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # 创建上方测速控制区域
+        control_frame = Frame(main_frame)
+        control_frame.pack(fill="x", pady=(0, 10))
+        
+        # 添加按钮
+        btn_frame = Frame(control_frame)
+        btn_frame.pack(side="left", padx=(0, 20))
+        
+        self.btn_start_test = Button(btn_frame, text="开始测速", command=self.start_speed_test, width=15)
+        self.btn_start_test.pack(fill="x")
+        
+        # 取消按钮（初始隐藏）
+        self.btn_cancel = Button(btn_frame, text="取消", command=self.cancel_speed_test, width=15)
+        self.btn_cancel.pack(fill="x", pady=(5, 0))
+        self.btn_cancel.pack_forget()
+        
+        self.btn_clear_results = Button(btn_frame, text="清除结果", command=self.clear_results, width=15)
+        self.btn_clear_results.pack(fill="x", pady=(5, 0))
+        
+        # 自定义DNS输入框
+        custom_dns_frame = Frame(control_frame)
+        custom_dns_frame.pack(side="left", fill="both", expand=True)
+        
+        Label(custom_dns_frame, text="自定义IPv6 DNS:").pack(anchor="w")
+        
+        entry_frame = Frame(custom_dns_frame)
+        entry_frame.pack(fill="x", pady=(5, 0))
+        
+        self.custom_dns_entry = Entry(entry_frame)
+        self.custom_dns_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        self.btn_add_custom = Button(entry_frame, text="添加", command=self.add_custom_dns, width=10)
+        self.btn_add_custom.pack(side="left")
+        
+        # 已添加的自定义DNS列表
+        Label(custom_dns_frame, text="已添加的自定义IPv6 DNS:").pack(anchor="w", pady=(10, 0))
+        
+        # 创建自定义DNS列表框架
+        self.custom_dns_frame = Frame(custom_dns_frame)
+        self.custom_dns_frame.pack(fill="x", pady=(5, 0))
+        
+        # 创建滚动条
+        self.custom_dns_scrollbar = ttk.Scrollbar(self.custom_dns_frame, orient="vertical")
+        self.custom_dns_scrollbar.pack(side="right", fill="y")
+        
+        # 创建画布来容纳自定义DNS列表
+        self.custom_dns_canvas = Canvas(self.custom_dns_frame, height=100, yscrollcommand=self.custom_dns_scrollbar.set)
+        self.custom_dns_canvas.pack(side="left", fill="both", expand=True)
+        
+        # 配置滚动条
+        self.custom_dns_scrollbar.config(command=self.custom_dns_canvas.yview)
+        
+        # 创建内部框架来放置勾选框
+        self.custom_dns_inner_frame = Frame(self.custom_dns_canvas)
+        self.custom_dns_canvas_window = self.custom_dns_canvas.create_window((0, 0), window=self.custom_dns_inner_frame, anchor="nw")
+        
+        # 绑定事件以更新滚动区域
+        self.custom_dns_inner_frame.bind("<Configure>", self._on_custom_dns_configure)
+        self.custom_dns_canvas.bind("<Configure>", self._on_canvas_configure)
+        
+        # 存储勾选状态的变量
+        self.custom_dns_vars = {}
+        
+        # 添加删除按钮，初始状态为禁用
+        self.btn_delete_custom = Button(custom_dns_frame, text="删除选中", command=self.delete_custom_dns, width=15, state="disabled")
+        self.btn_delete_custom.pack(pady=(5, 0), anchor="e")
+        
+        # 初始化自定义DNS列表显示
+        self._update_custom_dns_listbox()
+        
+        # 测速信息显示区域
+        self.progress_frame = Frame(main_frame)
+        self.progress_frame.pack(fill="x", pady=5)
+        
+        # 当前测速地址标签
+        self.current_dns_label = Label(self.progress_frame, text="", font=10)
+        self.current_dns_label.pack(anchor="w", pady=2)
+        self.current_dns_label.pack_forget()
+        
+        # 进度条
+        self.progress_var = DoubleVar()
+        self.progress_bar = ttk.Progressbar(self.progress_frame, variable=self.progress_var, length=100)
+        self.progress_bar.pack(fill="x", pady=2)
+        self.progress_bar.pack_forget()
+        
+        # 创建结果表格区域的容器
+        result_frame = Frame(main_frame)
+        result_frame.pack(fill="both", expand=True)
+        
+        # 创建结果表格
+        columns = ("name", "ip", "delay", "packet_loss", "status")
+        self.result_tree = ttk.Treeview(result_frame, columns=columns, show="headings")
+        
+        # 设置列宽和标题，并添加排序功能
+        self.result_tree.heading("name", text="DNS名称", command=lambda: self.sort_treeview(self.result_tree, "name"))
+        self.result_tree.column("name", width=150, anchor="w")
+        
+        self.result_tree.heading("ip", text="IPv6地址", command=lambda: self.sort_treeview(self.result_tree, "ip"))
+        self.result_tree.column("ip", width=200, anchor="w")
+        
+        self.result_tree.heading("delay", text="延迟(ms)", command=lambda: self.sort_treeview(self.result_tree, "delay", True))
+        self.result_tree.column("delay", width=80, anchor="center")
+        
+        self.result_tree.heading("packet_loss", text="丢包率", command=lambda: self.sort_treeview(self.result_tree, "packet_loss", True))
+        self.result_tree.column("packet_loss", width=80, anchor="center")
+        
+        self.result_tree.heading("status", text="状态", command=lambda: self.sort_treeview(self.result_tree, "status"))
+        self.result_tree.column("status", width=80, anchor="center")
+        
+        # 初始化结果表格的排序状态字典
+        self.result_sort_states = {}
+        
+        # 添加滚动条
+        yscroll = ttk.Scrollbar(result_frame, orient="vertical", command=self.result_tree.yview)
+        self.result_tree.configure(yscroll=yscroll.set)
+        
+        xscroll = ttk.Scrollbar(result_frame, orient="horizontal", command=self.result_tree.xview)
+        self.result_tree.configure(xscroll=xscroll.set)
+        
+        # 在result_frame中使用grid管理器
+        self.result_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        
+        # 设置grid权重，确保表格会随窗口大小变化而调整
+        result_frame.grid_rowconfigure(0, weight=1)
+        result_frame.grid_columnconfigure(0, weight=1)
+        
+        # 绑定鼠标滚轮事件
+        def on_mousewheel(event):
+            if event.state & 0x10000:  # 检查是否按下了Shift键
+                self.result_tree.xview_scroll(-1 if event.delta > 0 else 1, "units")
+            else:
+                self.result_tree.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        
+        self.result_tree.bind_all("<MouseWheel>", on_mousewheel)
+        self.result_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        
+        # 添加右键菜单支持
+        self.result_tree.bind("<Button-3>", self.show_context_menu)
+        
+        # 创建下方信息区域标签页
+        info_tabs = ttk.Notebook(main_frame)
+        info_tabs.pack(fill="both", expand=True)
+        
+        # 创建本机IPv6网络信息标签页
+        self.network_info_frame = Frame(info_tabs)
+        info_tabs.add(self.network_info_frame, text="本机ipv6网络信息")
+        
+        # 初始化网络信息显示
+        self.init_network_info_tab(self.network_info_frame)
+    
+    def init_network_info_tab(self, parent):
+        # 创建文本区域显示网络信息
+        network_info_text = scrolledtext.ScrolledText(parent, wrap="word")
+        network_info_text.pack(fill="both", expand=True, padx=10, pady=10)
+        network_info_text.config(state="disabled")
+        
+        # 添加刷新按钮
+        btn_refresh = Button(parent, text="刷新网络信息", command=lambda: self.refresh_network_info(network_info_text))
+        btn_refresh.pack(pady=(0, 10))
+        
+        # 初始加载网络信息
+        self.refresh_network_info(network_info_text)
+    
+    def init_predefined_dns_tab(self, parent):
+        """初始化预定义DNS服务器标签页"""
+        # 创建说明文本
+        info_label = Label(parent, text="以下是程序预定义的IPv6 DNS服务器列表：", 
+                          font=('微软雅黑', 10, 'bold'))
+        info_label.pack(pady=(10, 5), padx=10, anchor="w")
+        
+        # 创建主容器框架
+        main_container = Frame(parent)
+        main_container.pack(fill="both", expand=True, padx=10, pady=0)
+        
+        # 创建带有滚动条的框架，使用grid布局管理器
+        tree_frame = Frame(main_container)
+        tree_frame.pack(fill="both", expand=True)
+        
+        # 创建表格显示预定义DNS服务器
+        columns = ("name", "ip", "type", "delay")
+        self.predefined_dns_tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        self.predefined_dns_tree.configure(selectmode="extended")  # 允许选择多项
+        
+        # 设置列宽和标题，并添加点击排序功能
+        self.predefined_dns_tree.heading("name", text="DNS名称", command=lambda: self.sort_treeview(self.predefined_dns_tree, "name"))
+        self.predefined_dns_tree.column("name", width=200, anchor="w")
+        
+        self.predefined_dns_tree.heading("ip", text="IPv6地址", command=lambda: self.sort_treeview(self.predefined_dns_tree, "ip"))
+        self.predefined_dns_tree.column("ip", width=250, anchor="w")
+        
+        self.predefined_dns_tree.heading("type", text="类型", command=lambda: self.sort_treeview(self.predefined_dns_tree, "type"))
+        self.predefined_dns_tree.column("type", width=100, anchor="center")
+        
+        self.predefined_dns_tree.heading("delay", text="延迟(ms)", command=lambda: self.sort_treeview(self.predefined_dns_tree, "delay", is_numeric=True))
+        self.predefined_dns_tree.column("delay", width=100, anchor="center")
+        
+        # 添加垂直滚动条
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.predefined_dns_tree.yview)
+        
+        # 添加水平滚动条
+        xscroll = ttk.Scrollbar(main_container, orient="horizontal", command=self.predefined_dns_tree.xview)
+        xscroll.pack(side="bottom", fill="x", pady=(0, 5))
+        
+        # 配置表格与滚动条的绑定
+        self.predefined_dns_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        
+        # 使用grid布局管理器放置表格和垂直滚动条
+        self.predefined_dns_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        
+        # 设置grid权重，确保表格会随窗口大小变化而调整
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # 添加DNS服务器数据
+        # 国内服务器列表
+        domestic_servers = [
+            "阿里云IPv6", 
+            "腾讯云IPv6", 
+            "百度IPv6", 
+            "CNNIC IPv6", 
+            "中国移动IPv6", 
+            "中国电信IPv6", 
+            "中国联通IPv6", 
+            "教育网IPv6"
+        ]
+        
+        # 先添加国内服务器
+        for name, ip in self.predefined_dns_servers.items():
+            if name in domestic_servers:
+                self.predefined_dns_tree.insert("", "end", values=(name, ip, "国内", "未测速"))
+        
+        # 再添加国外服务器
+        for name, ip in self.predefined_dns_servers.items():
+            if name not in domestic_servers:
+                self.predefined_dns_tree.insert("", "end", values=(name, ip, "国外", "未测速"))
+        
+        # 确保表格显示所有项目
+        self.predefined_dns_tree.update_idletasks()
+        
+        # 添加测速完成后更新预定义DNS表格的功能
+        self.root.bind("<<SpeedTestCompleted>>", self.update_predefined_dns_table)
+        
+        # 初始化排序状态字典
+        self.sort_states = {}
+        for col in columns:
+            self.sort_states[col] = False
+    
+    def init_settings_tab(self):
+        # 创建设置项
+        settings_frame = Frame(self.tab_settings, padx=20, pady=20)
+        settings_frame.pack(fill="both", expand=True)
+        
+        # 测试次数设置
+        test_count_frame = Frame(settings_frame)
+        test_count_frame.pack(fill="x", pady=(0, 10))
+        
+        Label(test_count_frame, text="DNS测速次数:").pack(side="left", padx=(0, 10))
+        
+        self.test_count_var = StringVar(value="5")
+        Entry(test_count_frame, textvariable=self.test_count_var, width=5).pack(side="left")
+        Label(test_count_frame, text="次").pack(side="left")
+        
+        # 超时设置
+        timeout_frame = Frame(settings_frame)
+        timeout_frame.pack(fill="x", pady=(0, 10))
+        
+        Label(timeout_frame, text="DNS测试超时:").pack(side="left", padx=(0, 10))
+        
+        self.timeout_var = StringVar(value="2")
+        Entry(timeout_frame, textvariable=self.timeout_var, width=5).pack(side="left")
+        Label(timeout_frame, text="秒").pack(side="left")
+        
+        # 并发测试设置
+        concurrent_frame = Frame(settings_frame)
+        concurrent_frame.pack(fill="x", pady=(0, 10))
+        
+        Label(concurrent_frame, text="并发测试数:").pack(side="left", padx=(0, 10))
+        
+        self.concurrent_var = StringVar(value="5")
+        Entry(concurrent_frame, textvariable=self.concurrent_var, width=5).pack(side="left")
+        Label(concurrent_frame, text="个").pack(side="left")
+        
+        # 保存设置按钮
+        btn_save = Button(settings_frame, text="保存设置", command=self.save_settings)
+        btn_save.pack(pady=(20, 0))
+    
+    def check_ipv6_connectivity(self):
+        """检查系统是否支持IPv6"""
+        try:
+            # 尝试连接到IPv6地址
+            socket.create_connection(("2001:4860:4860::8888", 53), timeout=2)
+            return True
+        except (socket.error, OverflowError):
+            return False
+    
+    def start_speed_test(self):
+        """开始DNS测速"""
+        # 禁用开始按钮，启用取消按钮
+        self.btn_start_test.config(state="disabled")
+        self.btn_cancel.pack(fill="x", pady=(5, 0))
+        
+        # 只禁用特定控件，保留取消按钮功能
+        self.btn_start_test.config(state="disabled")
+        self.btn_clear_results.config(state="disabled")
+        self.btn_add_custom.config(state="disabled")
+        self.custom_dns_entry.config(state="disabled")
+        self.btn_cancel.pack(fill="x", pady=(5, 0))  # 确保取消按钮显示
+        
+        # 显示进度信息和进度条
+        self.current_dns_label.pack(anchor="w", pady=2)
+        self.progress_bar.pack(fill="x", pady=2)
+        self.root.update_idletasks()  # 强制更新UI以显示进度条
+        
+        # 清空结果
+        for item in self.result_tree.get_children():
+            self.result_tree.delete(item)
+        
+        # 获取设置
+        try:
+            test_count = int(self.test_count_var.get())
+            timeout = int(self.timeout_var.get())
+            concurrent_workers = int(self.concurrent_var.get())
+        except ValueError:
+            messagebox.showerror("错误", "请输入有效的数字设置")
+            self.btn_start_test.config(state="normal")
+            self.btn_clear_results.config(state="normal")
+            self.btn_add_custom.config(state="normal")
+            self.custom_dns_entry.config(state="normal")
+            self.btn_cancel.pack_forget()
+            self.current_dns_label.pack_forget()
+            self.progress_bar.pack_forget()
+            return
+        
+        # 准备DNS服务器列表
+        dns_servers = []
+        for name, ip in self.predefined_dns_servers.items():
+            dns_servers.append((name, ip))
+            
+        # 添加自定义DNS服务器
+        for name, ip in self.custom_dns_servers:
+            dns_servers.append((name, ip))
+        
+        if not dns_servers:
+            messagebox.showinfo("提示", "没有可测试的DNS服务器")
+            self.btn_start_test.config(state="normal")
+            self.btn_cancel.pack_forget()
+            self.root.attributes('-disabled', False)
+            self.current_dns_label.pack_forget()
+            self.progress_bar.pack_forget()
+            return
+        
+        # 重置取消标志
+        self.cancelled = False
+        
+        # 设置进度条最大值
+        total_servers = len(dns_servers)
+        self.progress_var.set(0)
+        
+        # 创建结果列表
+        results = []
+        completed_count = 0
+        
+        def update_progress():
+            nonlocal completed_count
+            completed_count += 1
+            progress = (completed_count / total_servers) * 100
+            self.progress_var.set(progress)
+            self.root.update()  # 使用update而不是update_idletasks，确保完全更新UI
+        
+        # 使用线程池进行并发测速
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrent_workers) as executor:
+            # 提交所有任务
+            future_to_dns = {
+                executor.submit(self.test_dns_server, name, ip, test_count, timeout): (name, ip)
+                for name, ip in dns_servers
+            }
+            
+            # 获取结果
+            for future in concurrent.futures.as_completed(future_to_dns):
+                if self.cancelled:
+                    # 取消所有剩余任务
+                    for f in future_to_dns:
+                        f.cancel()
+                    break
+                
+                name, ip = future_to_dns[future]
+                
+                # 更新当前测速地址
+                self.current_dns_label.config(text=f"正在测速（不要点击，请等待测速完成...）: {name} ({ip})")
+                self.root.update_idletasks()
+                
+                try:
+                    delay, packet_loss, status = future.result()
+                    results.append((name, ip, delay, packet_loss, status))
+                except Exception as e:
+                    results.append((name, ip, float('inf'), 100, f"测试出错: {str(e)}"))
+                
+                # 更新进度
+                update_progress()
+        
+        # 隐藏进度信息
+        self.current_dns_label.pack_forget()
+        self.progress_bar.pack_forget()
+        
+        # 恢复窗口交互
+        self.btn_start_test.config(state="normal")
+        self.btn_clear_results.config(state="normal")
+        self.btn_add_custom.config(state="normal")
+        self.custom_dns_entry.config(state="normal")
+        
+        # 隐藏取消按钮
+        self.btn_cancel.pack_forget()
+        
+        # 如果未取消，显示结果
+        if not self.cancelled:
+            # 按延迟排序结果
+            results.sort(key=lambda x: x[2])  # x[2] 是延迟
+            
+            # 显示结果（直接显示延迟速度）
+            for i, (name, ip, delay, packet_loss, status) in enumerate(results, 1):
+                # 格式化延迟显示（直接显示测速速度）
+                if delay == float('inf'):
+                    delay_str = "超时"
+                else:
+                    delay_str = f"{delay:.2f}"
+                
+                # 格式化丢包率显示
+                packet_loss_str = f"{packet_loss:.1f}%"
+                
+                # 设置行颜色
+                tag = "fast" if i <= 3 else "normal"
+                
+                self.result_tree.insert("", "end", values=(name, ip, delay_str, packet_loss_str, status), tags=(tag,))
+            
+            # 设置行颜色
+            self.result_tree.tag_configure("fast", background="#d4edda", foreground="#155724")
+            self.result_tree.tag_configure("normal", background="white")
+            
+            # 触发事件更新预定义DNS表格
+            self.root.event_generate("<<SpeedTestCompleted>>", when="tail")
+        else:
+            # 如果取消，显示提示
+            self.result_tree.insert("", "end", values=("", "", "", "", "测速已取消"))
+            
+    def cancel_speed_test(self):
+        """取消当前正在进行的测速"""
+        self.cancelled = True
+        self.current_dns_label.config(text="正在取消测速...")
+    
+    def update_predefined_dns_table(self, event=None):
+        """更新预定义DNS服务器表格中的延迟数据"""
+        if not hasattr(self, 'predefined_dns_tree'):
+            return
+        
+        # 获取所有结果数据
+        results = {}
+        for item in self.result_tree.get_children():
+            values = self.result_tree.item(item, "values")
+            if len(values) >= 3 and values[0] and values[1]:
+                results[values[1]] = values[2]  # IP地址 -> 延迟
+        
+        # 更新预定义DNS表格中的延迟数据
+        for item in self.predefined_dns_tree.get_children():
+            values = self.predefined_dns_tree.item(item, "values")
+            if len(values) >= 2 and values[1] in results:
+                # 保留原有数据，只更新延迟列
+                new_values = list(values)
+                new_values[3] = results[values[1]]  # 更新延迟列
+                self.predefined_dns_tree.item(item, values=new_values)
+                
+    def sort_treeview(self, tree, column, is_numeric=False):
+        """对Treeview表格进行排序"""
+        # 确定使用哪个排序状态字典
+        if tree == self.result_tree:
+            sort_states = self.result_sort_states
+        else:
+            sort_states = self.sort_states
+        
+        # 获取所有项
+        data = []
+        for item in tree.get_children(''):
+            value = tree.set(item, column)
+            data.append((value, item))
+        
+        # 确定排序方向
+        reverse = sort_states.get(column, False)
+        sort_states[column] = not reverse
+        
+        # 按数据类型排序
+        if is_numeric:
+            # 处理数值类型数据（延迟列）
+            def sort_key(x):
+                try:
+                    if x[0] == "未测速":
+                        return (float('inf'), x[1])
+                    elif x[0] == "超时":
+                        return (float('inf') - 1, x[1])
+                    else:
+                        return (float(x[0]), x[1])
+                except ValueError:
+                    return (x[0], x[1])
+            data.sort(key=sort_key, reverse=reverse)
+        else:
+            # 处理文本类型数据
+            data.sort(reverse=reverse)
+        
+        # 重新插入排序后的数据
+        for index, (value, item) in enumerate(data):
+            tree.move(item, '', index)
+        
+        # 更新所有列的标题，只高亮当前排序的列
+        for col in tree['columns']:
+            if col == column:
+                # 显示排序箭头
+                arrow = "▼" if reverse else "▲"
+                tree.heading(col, text=tree.heading(col, "text").rstrip(" ▲▼") + arrow)
+            else:
+                # 移除其他列的排序箭头
+                tree.heading(col, text=tree.heading(col, "text").rstrip(" ▲▼"))
+    
+    def test_dns_server(self, name, ip, test_count, timeout):
+        """测试单个DNS服务器的响应时间和丢包率"""
+        total_time = 0
+        success_count = 0
+        
+        for i in range(test_count):
+            # 检查是否取消
+            if self.cancelled:
+                return float('inf'), 100, "测速被取消"
+            
+            try:
+                # 记录开始时间
+                start_time = time.time()
+                
+                # 创建IPv6 socket
+                with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(timeout)
+                    
+                    # 构造DNS查询数据包（简单的A记录查询）
+                    query_id = i & 0xFFFF
+                    dns_query = self._build_dns_query(query_id, "www.example.com")
+                    
+                    # 发送查询并接收响应
+                    sock.sendto(dns_query, (ip, 53))
+                    data, _ = sock.recvfrom(512)
+                    
+                    # 验证响应
+                    if len(data) > 0 and self._validate_dns_response(data, query_id):
+                        # 计算响应时间
+                        end_time = time.time()
+                        response_time = (end_time - start_time) * 1000  # 转换为毫秒
+                        total_time += response_time
+                        success_count += 1
+            except socket.timeout:
+                # 超时，不增加成功计数
+                pass
+            except Exception:
+                # 其他错误，不增加成功计数
+                pass
+        
+        # 计算平均延迟和丢包率
+        if success_count > 0:
+            avg_delay = total_time / success_count
+            packet_loss = ((test_count - success_count) / test_count) * 100
+            status = "正常"
+        else:
+            avg_delay = float('inf')
+            packet_loss = 100
+            status = "超时"
+        
+        return avg_delay, packet_loss, status
+    
+    def _build_dns_query(self, query_id, domain):
+        """构建简单的DNS查询数据包"""
+        # DNS头部（12字节）
+        # ID: 2字节
+        # 标志: 2字节 (标准查询)
+        # 问题数: 2字节
+        # 回答数: 2字节
+        # 权威记录数: 2字节
+        # 额外记录数: 2字节
+        header = bytearray(12)
+        header[0:2] = query_id.to_bytes(2, byteorder='big')
+        header[2:4] = (0x0100).to_bytes(2, byteorder='big')  # 标准查询
+        header[4:6] = (0x0001).to_bytes(2, byteorder='big')  # 1个问题
+        
+        # 问题部分
+        question = bytearray()
+        
+        # 域名编码
+        for part in domain.split('.'):
+            question.append(len(part))
+            question.extend(part.encode('utf-8'))
+        
+        # 结束符
+        question.append(0)
+        
+        # 查询类型 (A记录)
+        question.extend((0x0001).to_bytes(2, byteorder='big'))
+        
+        # 查询类 (IN)
+        question.extend((0x0001).to_bytes(2, byteorder='big'))
+        
+        return header + question
+    
+    def _validate_dns_response(self, response, expected_id):
+        """验证DNS响应数据包"""
+        # 检查响应长度是否足够
+        if len(response) < 12:
+            return False
+        
+        # 检查ID是否匹配
+        response_id = int.from_bytes(response[0:2], byteorder='big')
+        if response_id != expected_id:
+            return False
+        
+        # 检查是否有响应标志
+        flags = int.from_bytes(response[2:4], byteorder='big')
+        if (flags & 0x8000) == 0:  # 检查响应标志位
+            return False
+        
+        return True
+    
+    def refresh_network_info(self, text_widget):
+        """刷新并显示本机IPv6网络信息"""
+        # 获取网络信息
+        network_info = self.get_network_info()
+        
+        # 显示网络信息
+        text_widget.config(state="normal")
+        text_widget.delete("1.0", "end")
+        text_widget.insert("end", network_info)
+        text_widget.config(state="disabled")
+    
+    def get_network_info(self):
+        """获取本机网络信息"""
+        info = []
+        
+        try:
+            # 使用ipconfig获取网络信息，添加CREATE_NO_WINDOW参数防止控制台窗口出现
+            result = subprocess.run(["ipconfig", "/all"], capture_output=True, text=True, encoding="gbk", creationflags=subprocess.CREATE_NO_WINDOW)
+            output = result.stdout
+            
+            # 提取IPv6地址信息
+            adapter_sections = re.split(r"以太网适配器|无线局域网适配器", output)
+            
+            for section in adapter_sections[1:]:  # 跳过第一个空字符串
+                adapter_name = section.split(':')[0].strip()
+                # 修复正则表达式中的换行符问题
+                ipv6_addresses = re.findall(r"IPv6 地址.*?: (.*?)\r", section)
+                dns_servers = re.findall(r"DNS 服务器.*?: (.*?)\r", section)
+                
+                # 如果上面的正则没匹配到，尝试另一种格式
+                if not ipv6_addresses:
+                    ipv6_addresses = re.findall(r"IPv6 地址.*?: (.*?)\n", section)
+                if not dns_servers:
+                    dns_servers = re.findall(r"DNS 服务器.*?: (.*?)\n", section)
+                
+                if ipv6_addresses:
+                    info.append(f"\n=== {adapter_name} ===")
+                    for addr in ipv6_addresses:
+                        if "临时" in addr:  # 跳过临时地址以减少输出
+                            continue
+                        info.append(f"IPv6 地址: {addr}")
+                    
+                    if dns_servers:
+                        info.append("DNS 服务器:")
+                        for dns in dns_servers:
+                            info.append(f"  - {dns}")
+        except Exception as e:
+            info.append(f"获取网络信息出错: {str(e)}")
+        
+        # 检查IPv6连接状态
+        ipv6_status = "已连接" if self.check_ipv6_connectivity() else "未连接"
+        info.insert(0, f"IPv6 连接状态: {ipv6_status}")
+        
+        if not info:
+            info.append("未找到IPv6网络信息")
+        
+        return "\n".join(info)
+    
+    def _update_delete_button_state(self, *args):
+        """根据勾选状态更新删除按钮的可用性"""
+        # 检查是否有勾选的项目
+        has_selected = any(var.get() for var in self.custom_dns_vars.values())
+        
+        # 更新按钮状态
+        self.btn_delete_custom.config(state="normal" if has_selected else "disabled")
+        
+    def add_custom_dns(self):
+        """添加自定义DNS服务器"""
+        dns_ip = self.custom_dns_entry.get().strip()
+        
+        # 验证IPv6地址格式
+        if not self._is_valid_ipv6(dns_ip):
+            messagebox.showerror("错误", "请输入有效的IPv6地址")
+            return
+        
+        # 检查是否与预定义DNS重复
+        if dns_ip in self.predefined_dns_servers.values():
+            messagebox.showinfo("提示", "预定义DNS列表中已存在")
+            return
+        
+        # 检查是否已存在于自定义列表
+        for name, ip in self.custom_dns_servers:
+            if ip == dns_ip:
+                messagebox.showinfo("提示", "该DNS服务器已存在")
+                return
+        
+        # 添加到自定义列表
+        name = f"自定义{len(self.custom_dns_servers) + 1}"
+        self.custom_dns_servers.append((name, dns_ip))
+        
+        # 更新显示
+        self._update_custom_dns_listbox()
+        
+        # 清空输入框
+        self.custom_dns_entry.delete(0, "end")
+    
+    def _is_valid_ipv6(self, ip):
+        """验证IPv6地址格式是否正确"""
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
+    
+    def _update_custom_dns_listbox(self):
+        """更新自定义DNS列表显示"""
+        
+        # 清空现有内容
+        for widget in self.custom_dns_inner_frame.winfo_children():
+            widget.destroy()
+        
+        # 重置勾选状态变量
+        self.custom_dns_vars = {}
+        
+        # 添加新的勾选框
+        for name, ip in self.custom_dns_servers:
+            var = IntVar()
+            # 设置背景色以便更容易看到
+            checkbox_frame = Frame(self.custom_dns_inner_frame, bg="lightgray")
+            checkbox_frame.pack(fill="x", padx=5, pady=2)
+            
+            checkbox = Checkbutton(checkbox_frame, variable=var)
+            checkbox.pack(side="left", padx=5)
+            
+            # 设置标签的固定宽度和背景色
+            label = Label(checkbox_frame, text=f"{name}: {ip}", anchor="w", width=50, bg="lightgray")
+            label.pack(side="left", fill="x", expand=True)
+            
+            # 绑定勾选事件以更新删除按钮状态
+            var.trace_add("write", self._update_delete_button_state)
+            self.custom_dns_vars[(name, ip)] = var
+        
+        # 手动触发一次更新
+        self._update_delete_button_state()
+        
+        # 更新画布滚动区域
+        self.custom_dns_inner_frame.update_idletasks()
+        self.custom_dns_canvas.config(scrollregion=self.custom_dns_canvas.bbox("all"))
+        
+    def _on_custom_dns_configure(self, event):
+        """当自定义DNS列表内容变化时更新画布滚动区域"""
+        self.custom_dns_canvas.config(scrollregion=self.custom_dns_canvas.bbox("all"))
+        
+    def _on_canvas_configure(self, event):
+        """当画布大小变化时调整内部框架宽度"""
+        self.custom_dns_canvas.itemconfig(self.custom_dns_canvas_window, width=event.width)
+    
+    def clear_results(self):
+        """清除测速结果"""
+        for item in self.result_tree.get_children():
+            self.result_tree.delete(item)
+    
+    def save_settings(self):
+        """保存设置"""
+        settings = {
+            "test_count": self.test_count_var.get(),
+            "timeout": self.timeout_var.get(),
+            "concurrent": self.concurrent_var.get(),
+            "custom_dns_servers": self.custom_dns_servers
+        }
+        
+        try:
+            with open("settings.json", "w") as f:
+                json.dump(settings, f)
+            messagebox.showinfo("成功", "设置已保存")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存设置失败: {str(e)}")
+    
+    def load_settings(self):
+        """加载保存的设置"""
+        try:
+            if os.path.exists("settings.json"):
+                with open("settings.json", "r") as f:
+                    settings = json.load(f)
+                    
+                if "test_count" in settings:
+                    self.test_count_var.set(settings["test_count"])
+                
+                if "timeout" in settings:
+                    self.timeout_var.set(settings["timeout"])
+                
+                if "concurrent" in settings:
+                    self.concurrent_var.set(settings["concurrent"])
+                
+                if "custom_dns_servers" in settings:
+                    self.custom_dns_servers = settings["custom_dns_servers"]
+                    self._update_custom_dns_listbox()
+        except Exception:
+            # 忽略加载错误
+            pass
+    
+    def show_context_menu(self, event):
+        """显示右键菜单"""
+        # 获取选中的项
+        item = self.result_tree.identify_row(event.y)
+        if item:
+            # 选中点击的项
+            self.result_tree.selection_set(item)
+            
+            # 创建右键菜单
+            context_menu = Frame(self.tab_speed_test, bd=1, relief="raised", bg="white")
+            
+            # 添加设置为首选DNS的选项
+            def set_as_preferred_dns():
+                selected_item = self.result_tree.selection()[0]
+                dns_info = self.result_tree.item(selected_item, "values")
+                dns_name = dns_info[1]
+                dns_ip = dns_info[2]
+                
+                # 这里可以添加设置DNS的功能
+                messagebox.showinfo("提示", f"已选择将 {dns_name} ({dns_ip}) 设置为首选DNS\n\n注意：实际修改网络适配器设置需要管理员权限。\n请手动在网络适配器设置中更改DNS服务器地址。")
+                context_menu.destroy()
+            
+            btn_set_preferred = Button(context_menu, text="设置为首选DNS", command=set_as_preferred_dns, width=15)
+            btn_set_preferred.pack(fill="x")
+            
+            # 显示右键菜单
+            x, y = self.root.winfo_pointerxy()
+            context_menu.place(x=x, y=y)
+            
+            # 定义关闭菜单的函数
+            def close_menu(event=None):
+                if context_menu.winfo_exists():
+                    context_menu.destroy()
+                self.root.unbind("<Button-1>", close_menu_id)
+            
+            # 绑定点击事件关闭菜单
+            close_menu_id = self.root.bind("<Button-1>", lambda e: close_menu(), add="+")
+            
+            # 设置菜单的短暂寿命，避免菜单一直存在
+            self.root.after(5000, close_menu)
+    
+    def delete_custom_dns(self):
+        """删除选中的自定义DNS服务器"""
+        # 获取所有选中的DNS
+        selected_servers = [(name, ip) for (name, ip), var in self.custom_dns_vars.items() if var.get()]
+        
+        if not selected_servers:
+            messagebox.showinfo("提示", "请先选择要删除的DNS服务器")
+            return
+        
+        # 弹出确认对话框
+        count = len(selected_servers)
+        response = messagebox.askyesno("确认删除", f"是否删除已选中的{count}个自定义DNS地址条目？")
+        
+        if response:
+            # 删除选中的DNS
+            for name, ip in selected_servers:
+                for i, (server_name, server_ip) in enumerate(self.custom_dns_servers):
+                    if server_name == name and server_ip == ip:
+                        self.custom_dns_servers.pop(i)
+                        break
+            
+            # 更新显示
+            self._update_custom_dns_listbox()
+    
+    def init_about_tab(self):
+        """初始化关于标签页"""
+        # 创建内容框架
+        about_frame = Frame(self.tab_about)
+        about_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # 添加标题
+        title_label = Label(about_frame, text="IPv6 DNS优化器", font=('微软雅黑', 16, 'bold'))
+        title_label.pack(pady=(0, 20))
+        
+        # 创建带有滚动条的文本区域显示帮助信息
+        help_text = scrolledtext.ScrolledText(about_frame, wrap="word", font=('微软雅黑', 10))
+        help_text.pack(fill="both", expand=True, padx=10, pady=10)
+        help_text.config(state="disabled")
+        
+        # 添加帮助信息
+        help_content = """# IPv6 DNS优化器
+
+## 项目简介
+IPv6 DNS优化器是一款用于测试和优化IPv6 DNS服务器的工具，帮助用户找出最佳的DNS服务器，提高网络访问速度。
+
+## 功能特点
+- **DNS测速**：测试IPv6 DNS服务器的响应速度和稳定性
+- **预定义DNS列表**：包含国内外常用IPv6 DNS服务器
+- **自定义DNS**：支持添加、删除和管理自定义IPv6 DNS服务器
+- **并发测试**：可配置并发测试数量，提高测试效率
+- **结果排序**：自动按延迟排序，直观显示最优DNS
+- **网络信息**：显示本机IPv6网络配置信息
+- **设置保存**：保存用户设置，下次启动时自动加载
+- **友好界面**：使用Tkinter构建的简洁直观界面
+
+## 支持的预定义DNS服务器
+
+### 国内IPv6 DNS服务器
+- 阿里云IPv6: 2400:3200::1
+- 腾讯云IPv6: 2402:4e00::
+- 百度IPv6: 2400:da00::6666
+- CNNIC IPv6: 2001:dc7:1000::1
+- 中国移动IPv6: 2409:8000::
+- 中国电信IPv6: 240e:950::
+- 中国联通IPv6: 2408:871a::
+- 教育网IPv6: 2001:da8:2002::
+
+### 国外IPv6 DNS服务器
+- Google Public DNS IPv6: 2001:4860:4860::8888
+- Cloudflare IPv6: 2606:4700:4700::1111
+- Quad9 IPv6 (安全): 2620:fe::fe
+- OpenDNS IPv6: 2620:119:35::35
+- Norton ConnectSafe IPv6: 2620:109:c0::2:4001
+- DNS.WATCH IPv6: 2001:1608:10:25::1c04:b12f
+- Level3 IPv6: 2001:470:20::2
+- Verisign IPv6: 2620:74:1b::1:1
+
+## 使用方法
+
+### 基本测速
+1. 启动程序后，默认进入"ipv6 DNS测速"标签页
+2. 点击"开始测速"按钮，程序会自动测试所有预定义和自定义的DNS服务器
+3. 测速过程中会显示当前测试的DNS地址和进度条
+4. 测试完成后，结果会按延迟从小到大排序显示
+5. 前三名最优DNS会以绿色背景高亮显示
+
+### 自定义DNS管理
+1. 在"ipv6 DNS测速"标签页的自定义DNS输入框中输入IPv6地址
+2. 点击"添加"按钮，将DNS添加到自定义列表中
+3. 在已添加的DNS列表中，可以勾选需要管理的DNS
+4. 点击"删除选中"按钮，删除勾选的DNS服务器
+5. 自定义DNS服务器会在程序重启后保留
+
+### 设置配置
+1. 切换到"设置"标签页
+2. 配置以下参数：
+   - **DNS测速次数**：设置每个DNS服务器的测试次数（默认5次）
+   - **DNS测试超时**：设置测试超时时间（默认2秒）
+   - **并发测试数**：设置同时测试的DNS服务器数量（默认5个）
+3. 点击"保存设置"按钮保存配置
+
+### 查看预定义DNS
+1. 切换到"预定义DNS"标签页
+2. 浏览所有内置的DNS服务器列表
+3. 测速完成后，预定义DNS表格中的延迟数据会自动更新
+
+### 查看网络信息
+1. 在"ipv6 DNS测速"标签页底部的信息标签中，切换到"本机ipv6网络信息"
+2. 查看当前系统的IPv6网络配置信息
+3. 点击"刷新网络信息"按钮可更新显示
+
+### 右键菜单功能
+在测速结果表格中，右键点击任意DNS条目，可以选择"设置为首选DNS"选项
+
+## 技术说明
+
+### 依赖项
+- 完全基于Python标准库开发，无需安装额外依赖
+- 使用Tkinter构建图形界面
+- 使用socket模块测试DNS连接
+- 使用concurrent.futures实现并发测试
+
+### 注意事项
+1. 程序需要在支持IPv6的网络环境下运行
+2. 实际修改系统DNS设置需要管理员权限
+3. 测速结果仅供参考，实际网络体验可能受多种因素影响
+4. 如果遇到程序错误，详细错误信息会保存在error.log文件中
+
+## 版本信息
+- 版本：1.0
+- 作者：@七月青竹
+- 论坛：吾爱破解论坛 @spuifi
+
+## 许可证
+本项目采用MIT许可证，欢迎自由使用和修改。"""
+        
+        help_text.config(state="normal")
+        help_text.insert("end", help_content)
+        help_text.config(state="disabled")
+    
+
+def setup_exception_handling():
+    """设置全局异常处理"""
+    
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        """处理未捕获的异常"""
+        # 如果是用户中断（Ctrl+C），不显示错误
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        # 格式化错误信息
+        error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        
+        # 写入错误日志
+        try:
+            with open("error.log", "w", encoding="utf-8") as f:
+                f.write(f"程序异常: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                f.write(error_msg)
+        except Exception:
+            pass
+        
+        # 创建一个简单的窗口显示错误信息
+        error_window = Tk()
+        error_window.title("程序错误")
+        error_window.geometry("600x400")
+        
+        Label(error_window, text="程序运行时出现错误，请查看详细信息:", font=("微软雅黑", 10)).pack(pady=10)
+        
+        # 创建滚动文本框显示错误信息
+        error_text = scrolledtext.ScrolledText(error_window, wrap="word", font=("微软雅黑", 9))
+        error_text.pack(fill="both", expand=True, padx=10, pady=10)
+        error_text.insert("end", error_msg)
+        error_text.config(state="disabled")
+        
+        # 添加复制按钮
+        def copy_to_clipboard():
+            error_window.clipboard_clear()
+            error_window.clipboard_append(error_msg)
+            messagebox.showinfo("成功", "错误信息已复制到剪贴板")
+        
+        Button(error_window, text="复制错误信息", command=copy_to_clipboard).pack(pady=5)
+        Button(error_window, text="关闭", command=error_window.destroy).pack(pady=5)
+        
+        # 保持窗口显示
+        error_window.mainloop()
+    
+    # 设置全局异常钩子
+    sys.excepthook = handle_exception
+
+def main():
+    """主程序入口"""
+    # 导入需要的模块
+    import tkinter as tk
+    # 设置全局异常处理
+    setup_exception_handling()
+    
+    try:
+        # 程序使用标准库，不需要matplotlib
+        
+        # 创建主应用程序
+        root = tk.Tk()
+        # 设置中文字体支持
+        root.option_add("*Font", ("微软雅黑", 10))
+        
+        app = IPv6DNSOptimizer(root)
+        root.mainloop()
+    except Exception as e:
+        # 记录详细的错误信息到日志文件
+        import datetime
+        try:
+            with open("error.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.datetime.now()} - 程序启动失败: {str(e)}\n")
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
+        
+        # 显示友好的错误信息给用户
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            error_root = tk.Tk()
+            error_root.withdraw()  # 隐藏主窗口
+            messagebox.showerror("程序启动失败", f"抱歉，程序无法正常启动。\n错误信息: {str(e)}\n\n请检查error.log文件获取详细信息。")
+            error_root.destroy()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()
